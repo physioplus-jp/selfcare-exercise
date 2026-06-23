@@ -79,8 +79,13 @@
   .qty-field{ display:flex; flex-direction:column; gap:2px; }
   .qty-field label{ font-size:10.5px; color:var(--ink-soft); font-family:var(--font-mono); }
   .qty-field input{
-    width:52px; padding:6px 6px; border:1px solid var(--line); border-radius:6px;
+    width:48px; padding:6px 4px; border:1px solid var(--line); border-radius:6px;
     font-family:var(--font-mono); font-size:14px; text-align:center; color:var(--ink);
+  }
+  .qty-field .qty-row{ display:flex; gap:4px; }
+  .qty-field select.qty-unit{
+    padding:6px 2px; border:1px solid var(--line); border-radius:6px;
+    font-family:var(--font-display); font-size:12.5px; color:var(--ink); background:#fff;
   }
   .ex-preview-link{
     flex-shrink:0; width:30px; height:30px; border-radius:50%;
@@ -313,6 +318,8 @@
   const CATEGORY_ORDER = ["頸・肩甲骨","肩関節","背中・腰","肘・手関節","股関節","膝関節","足関節"];
   const PLAY_ICON = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
   const EYE_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>';
+  const UNIT_CODE = {'回':'r', '秒':'s'};
+  const UNIT_LABEL = {'r':'回', 's':'秒'};
 
   /* ===================== Routing: staff vs patient ===================== */
   const params = new URLSearchParams(window.location.search);
@@ -356,6 +363,8 @@
         row.className = 'ex-row';
         row.dataset.no = ex.no;
         row.dataset.name = ex.name;
+        // ストレッチ・マッサージ系は「秒」、トレーニング系は「回」をデフォルトにする
+        const defaultUnit = (ex.purpose === '伸ばす' || ex.purpose === '緩める') ? '秒' : '回';
         row.innerHTML =
           '<input type="checkbox" id="chk' + ex.no + '" data-no="' + ex.no + '">' +
           '<span class="ex-no">No.' + String(ex.no).padStart(2,'0') + '</span>' +
@@ -364,7 +373,15 @@
             '<span class="ex-tag">' + ex.cat + ' / ' + ex.purpose + '</span>' +
           '</div>' +
           '<div class="ex-qty-inputs">' +
-            '<div class="qty-field"><label>回数</label><input type="number" min="1" value="10" class="qty-reps" data-no="' + ex.no + '"></div>' +
+            '<div class="qty-field"><label>回数/秒数</label>' +
+              '<div class="qty-row">' +
+                '<input type="number" min="1" value="10" class="qty-reps" data-no="' + ex.no + '">' +
+                '<select class="qty-unit" data-no="' + ex.no + '" data-default="' + defaultUnit + '">' +
+                  '<option value="回"' + (defaultUnit==='回' ? ' selected' : '') + '>回</option>' +
+                  '<option value="秒"' + (defaultUnit==='秒' ? ' selected' : '') + '>秒</option>' +
+                '</select>' +
+              '</div>' +
+            '</div>' +
             '<div class="qty-field"><label>セット数</label><input type="number" min="1" value="2" class="qty-sets" data-no="' + ex.no + '"></div>' +
           '</div>' +
           '<a class="ex-preview-link" href="' + ex.url + '" target="_blank" rel="noopener noreferrer" title="動画を確認する">' + EYE_ICON + '</a>';
@@ -424,6 +441,7 @@
       container.querySelectorAll('.ex-row').forEach(function(r){ r.classList.remove('is-checked'); });
       container.querySelectorAll('.qty-reps').forEach(function(i){ i.value = 10; });
       container.querySelectorAll('.qty-sets').forEach(function(i){ i.value = 2; });
+      container.querySelectorAll('.qty-unit').forEach(function(s){ s.value = s.dataset.default; });
       document.getElementById('searchBox').value = '';
       container.querySelectorAll('.ex-row').forEach(function(r){ r.classList.remove('is-hidden'); });
       container.querySelectorAll('.cat-group').forEach(function(g){ g.style.display=''; });
@@ -440,14 +458,17 @@
       if (chk && chk.checked){
         const reps = parseInt(container.querySelector('.qty-reps[data-no="'+ex.no+'"]').value, 10) || 1;
         const sets = parseInt(container.querySelector('.qty-sets[data-no="'+ex.no+'"]').value, 10) || 1;
-        result.push({no: ex.no, name: ex.name, cat: ex.cat, url: ex.url, reps: reps, sets: sets});
+        const unit = container.querySelector('.qty-unit[data-no="'+ex.no+'"]').value || '回';
+        result.push({no: ex.no, name: ex.name, cat: ex.cat, url: ex.url, reps: reps, sets: sets, unit: unit});
       }
     });
     return result;
   }
 
   function buildRxString(selections){
-    return selections.map(function(s){ return s.no + '-' + s.reps + '-' + s.sets; }).join(',');
+    return selections.map(function(s){
+      return s.no + '-' + s.reps + '-' + s.sets + '-' + (UNIT_CODE[s.unit] || 'r');
+    }).join(',');
   }
 
   function renderResultPanel(selections){
@@ -468,7 +489,7 @@
       li.innerHTML =
         '<span class="ex-no">No.' + String(s.no).padStart(2,'0') + '</span>' +
         '<div class="ex-main"><p class="ex-name" style="margin:0;">' + s.name + '</p></div>' +
-        '<span class="preview-qty">' + s.reps + '回 × ' + s.sets + 'セット</span>';
+        '<span class="preview-qty">' + s.reps + s.unit + ' × ' + s.sets + 'セット</span>';
       previewList.appendChild(li);
     });
 
@@ -508,7 +529,7 @@
 
     const rows = selections.map(function(s){
       return '<tr><td>No.' + String(s.no).padStart(2,'0') + '</td><td>' + s.name + '</td>' +
-             '<td style="text-align:center;">' + s.reps + ' 回</td><td style="text-align:center;">' + s.sets + ' セット</td></tr>';
+             '<td style="text-align:center;">' + s.reps + ' ' + s.unit + '</td><td style="text-align:center;">' + s.sets + ' セット</td></tr>';
     }).join('');
 
     const html =
@@ -533,7 +554,7 @@
       '<h1>セルフケアエクササイズ プログラム</h1>' +
       '<div class="blank">お名前:<span>&nbsp;</span> 様</div>' +
       '<div class="blank">処方日:<span>&nbsp;</span></div>' +
-      '<table><thead><tr><th>No.</th><th>種目名</th><th>回数</th><th>セット数</th></tr></thead><tbody>' + rows + '</tbody></table>' +
+      '<table><thead><tr><th>No.</th><th>種目名</th><th>回数/秒数</th><th>セット数</th></tr></thead><tbody>' + rows + '</tbody></table>' +
       (qrDataUri ?
         '<div class="qr-area"><img src="' + qrDataUri + '" alt="QRコード"><p>スマートフォンでこのQRコードを読み取ると、動画つきの一覧をブラウザで確認できます。<br>' + link + '</p></div>'
         : '') +
@@ -562,11 +583,12 @@
     const selections = [];
     parts.forEach(function(part){
       const bits = part.split('-');
-      if (bits.length !== 3) return;
+      if (bits.length !== 3 && bits.length !== 4) return;
       const no = parseInt(bits[0],10), reps = parseInt(bits[1],10), sets = parseInt(bits[2],10);
+      const unit = bits.length === 4 ? (UNIT_LABEL[bits[3]] || '回') : '回';
       const ex = EXERCISES.find(function(e){ return e.no === no; });
       if (ex && reps > 0 && sets > 0){
-        selections.push({no: ex.no, name: ex.name, url: ex.url, reps: reps, sets: sets});
+        selections.push({no: ex.no, name: ex.name, url: ex.url, reps: reps, sets: sets, unit: unit});
       }
     });
 
@@ -584,7 +606,7 @@
           '<span class="ex-no" style="font-family:var(--font-mono); font-size:12px; color:var(--ink-soft); background:var(--surface-sunken); border-radius:6px; padding:4px 7px; font-weight:700;">No.' + String(s.no).padStart(2,'0') + '</span>' +
           '<div class="ex-body">' +
             '<p class="ex-name">' + s.name + '</p>' +
-            '<span class="ex-qty-display">' + s.reps + '回 × ' + s.sets + 'セット</span>' +
+            '<span class="ex-qty-display">' + s.reps + s.unit + ' × ' + s.sets + 'セット</span>' +
           '</div>' +
           '<a class="ex-play" href="' + s.url + '" target="_blank" rel="noopener noreferrer">' + PLAY_ICON + '動画を見る</a>';
         list.appendChild(li);
