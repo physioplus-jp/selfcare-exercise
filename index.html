@@ -186,6 +186,8 @@
 </head>
 <body>
 
+<div id="loadingScreen" style="position:fixed; inset:0; background:#fff; display:flex; align-items:center; justify-content:center; z-index:1000; font-family:'Zen Kaku Gothic New',sans-serif; color:#5A5A5A; font-size:14px;">読み込み中…</div>
+
 <div class="consent-overlay hidden" id="consentOverlay" role="dialog" aria-modal="true" aria-labelledby="consentTitle">
   <div class="consent-card">
     <h2 id="consentTitle">ご利用前にご確認ください</h2>
@@ -208,6 +210,7 @@
     <img class="clinic-logo" id="logoImgStaff" alt="有栖川整形外科">
     <h1>セルフケアエクササイズ 処方作成</h1>
     <p class="sub">種目を選び、回数・セット数を入力してください。作成後にリンク・QRコードが発行されます。</p>
+    <p id="dataStatusNote" style="font-size:11.5px; color:var(--ink-faint); font-family:var(--font-mono); margin:8px 0 0;"></p>
   </header>
 
   <div class="search-row">
@@ -321,15 +324,105 @@
   const UNIT_CODE = {'回':'r', '秒':'s'};
   const UNIT_LABEL = {'r':'回', 's':'秒'};
 
+  /* ===================== Live spreadsheet sync ===================== */
+  // スタッフがGoogleスプレッドシートを編集すると、ここから毎回最新データを読み込みます。
+  // 取得に失敗した場合は、上のEXERCISES(最後にうまく取り込めた内容)をそのまま使い続けます。
+  const SHEET_ID = "1QP7T4ibdeUbh8iZlqgrytACi7cXHvjIGhzZQ3fxFdOk";
+  const SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/" + SHEET_ID + "/gviz/tq?tqx=out:csv&gid=0";
+  const FETCH_TIMEOUT_MS = 6000;
+
+  let ACTIVE_EXERCISES = EXERCISES.slice();
+  let dataSourceStatus = 'fallback'; // 'live' | 'fallback'
+  let dataSourceCount = ACTIVE_EXERCISES.length;
+
+  function parseCSV(text){
+    const rows = [];
+    let row = [], field = '', inQuotes = false;
+    for (let i = 0; i < text.length; i++){
+      const c = text[i];
+      if (inQuotes){
+        if (c === '"'){
+          if (text[i+1] === '"'){ field += '"'; i++; }
+          else { inQuotes = false; }
+        } else {
+          field += c;
+        }
+      } else {
+        if (c === '"'){ inQuotes = true; }
+        else if (c === ','){ row.push(field); field = ''; }
+        else if (c === '\n'){ row.push(field); rows.push(row); row = []; field = ''; }
+        else if (c === '\r'){ /* skip */ }
+        else { field += c; }
+      }
+    }
+    if (field.length > 0 || row.length > 0){ row.push(field); rows.push(row); }
+    return rows;
+  }
+
+  function rowsToExercises(rows){
+    const out = [];
+    for (let i = 1; i < rows.length; i++){ // 1行目(見出し)はスキップ
+      const r = rows[i];
+      if (!r || r.length < 5) continue;
+      const no = parseInt(String(r[0]).trim(), 10);
+      const name = String(r[1]).trim();
+      const cat = String(r[2]).trim();
+      const purpose = String(r[3]).trim();
+      const url = String(r[4]).trim();
+      if (!no || !name || !cat || !url) continue;
+      if (!/^https?:\/\//.test(url)) continue; // ハイパーリンクの表示テキストしか取れていない行は除外
+      out.push({no: no, name: name, cat: cat, purpose: purpose, url: url});
+    }
+    const seen = new Set();
+    const deduped = [];
+    out.forEach(function(e){ if (!seen.has(e.no)){ seen.add(e.no); deduped.push(e); } });
+    deduped.sort(function(a,b){ return a.no - b.no; });
+    return deduped;
+  }
+
+  function fetchWithTimeout(url, ms){
+    return Promise.race([
+      fetch(url, {cache:'no-store'}).then(function(res){
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return res.text();
+      }),
+      new Promise(function(_, reject){ setTimeout(function(){ reject(new Error('timeout')); }, ms); })
+    ]);
+  }
+
+  async function loadLiveData(){
+    try{
+      const text = await fetchWithTimeout(SHEET_CSV_URL, FETCH_TIMEOUT_MS);
+      const rows = parseCSV(text);
+      const parsed = rowsToExercises(rows);
+      if (parsed.length > 0){
+        ACTIVE_EXERCISES = parsed;
+        dataSourceStatus = 'live';
+        dataSourceCount = parsed.length;
+      }
+    } catch(err){
+      dataSourceStatus = 'fallback';
+      dataSourceCount = ACTIVE_EXERCISES.length;
+      if (window.console && window.console.warn){
+        console.warn('スプレッドシートの取得に失敗したため、組み込みデータを使用します。', err);
+      }
+    }
+  }
+
   /* ===================== Routing: staff vs patient ===================== */
   const params = new URLSearchParams(window.location.search);
   const rxParam = params.get('rx');
 
-  if (rxParam){
-    initPatientView(rxParam);
-  } else {
-    initStaffView();
-  }
+  (async function bootstrap(){
+    await loadLiveData();
+    const loadingScreen = document.getElementById('loadingScreen');
+    if (loadingScreen) loadingScreen.style.display = 'none';
+    if (rxParam){
+      initPatientView(rxParam);
+    } else {
+      initStaffView();
+    }
+  })();
 
   /* ===================== Consent gate (patient view only) ===================== */
   function showConsentGate(onAgree){
@@ -348,11 +441,26 @@
   function initStaffView(){
     document.getElementById('staffView').style.display = 'block';
 
+    const statusNote = document.getElementById('dataStatusNote');
+    if (statusNote){
+      const now = new Date();
+      const timeStr = now.getFullYear() + '/' + String(now.getMonth()+1).padStart(2,'0') + '/' + String(now.getDate()).padStart(2,'0') +
+        ' ' + String(now.getHours()).padStart(2,'0') + ':' + String(now.getMinutes()).padStart(2,'0');
+      if (dataSourceStatus === 'live'){
+        statusNote.textContent = 'スプレッドシートと同期しました(' + dataSourceCount + '件 / ' + timeStr + ')';
+      } else {
+        statusNote.textContent = 'スプレッドシートを取得できなかったため、組み込みデータ(' + dataSourceCount + '件)を表示しています。インターネット接続をご確認のうえ、再読み込みしてください。';
+      }
+    }
+
     const container = document.getElementById('checklistContainer');
     const byCat = {};
-    EXERCISES.forEach(function(e){ (byCat[e.cat] = byCat[e.cat] || []).push(e); });
+    ACTIVE_EXERCISES.forEach(function(e){ (byCat[e.cat] = byCat[e.cat] || []).push(e); });
 
-    CATEGORY_ORDER.forEach(function(cat){
+    const extraCats = Object.keys(byCat).filter(function(c){ return CATEGORY_ORDER.indexOf(c) === -1; });
+    const groupOrder = CATEGORY_ORDER.concat(extraCats);
+
+    groupOrder.forEach(function(cat){
       const items = byCat[cat] || [];
       if (items.length === 0) return;
       const group = document.createElement('div');
@@ -453,7 +561,7 @@
 
   function collectSelections(container){
     const result = [];
-    EXERCISES.forEach(function(ex){
+    ACTIVE_EXERCISES.forEach(function(ex){
       const chk = container.querySelector('#chk' + ex.no);
       if (chk && chk.checked){
         const reps = parseInt(container.querySelector('.qty-reps[data-no="'+ex.no+'"]').value, 10) || 1;
@@ -586,7 +694,7 @@
       if (bits.length !== 3 && bits.length !== 4) return;
       const no = parseInt(bits[0],10), reps = parseInt(bits[1],10), sets = parseInt(bits[2],10);
       const unit = bits.length === 4 ? (UNIT_LABEL[bits[3]] || '回') : '回';
-      const ex = EXERCISES.find(function(e){ return e.no === no; });
+      const ex = ACTIVE_EXERCISES.find(function(e){ return e.no === no; });
       if (ex && reps > 0 && sets > 0){
         selections.push({no: ex.no, name: ex.name, url: ex.url, reps: reps, sets: sets, unit: unit});
       }
